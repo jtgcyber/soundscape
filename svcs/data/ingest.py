@@ -1,6 +1,31 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# This script is a command-line tool for managing the ingestion of OpenStreetMap (OSM) data into a PostgreSQL database. 
+# It uses Kubernetes to manage the database and services, and the Imposm tool to import the data. 
+# The script is designed to be highly configurable, with many options that can be set via command-line arguments.
+
+# Here's a brief overview of what the script does:
+
+# Argument Parsing: The script begins by defining a number of command-line arguments that can be used to configure its behavior.
+# These include options to skip certain tasks, specify the update model, set various file and directory paths, and more.
+
+# Data Import Functions: The script defines a number of functions for importing data. 
+# These include fetch_extract to download a specific extract of OSM data, import_extract to import a specific extract into the database, and import_extracts_and_write to import multiple extracts and write them to the database.
+
+# Database Provisioning Functions: The script also includes functions for provisioning the database. 
+# These include provision_database_async to create the database and enable necessary PostgreSQL extensions, and provision_database_soundscape_async to execute additional SQL scripts.
+
+# Kubernetes Management Functions: The script includes functions for managing the Kubernetes deployments associated with the database. 
+# These include execute_kube_updatemodel_provision_and_import to provision the database and import data, execute_kube_sync_deployments to synchronize the Kubernetes deployments with the current state of the databases, and execute_kube_sync_tile_services to manage the tile services.
+
+# Telemetry Logging: If the --telemetry argument is provided, the script logs telemetry data for various operations.
+
+# Main Execution: The script parses the command-line arguments, sets up logging, and then calls execute_kube_updatemodel to start the data import and database provisioning process. 
+# If the --where or --sourceupdate arguments are provided, it filters the list of OSM extracts to import based on these arguments.
+
+# Error Handling and Cleanup: The script includes a finally block to ensure that logging is properly shut down even if an error occurs during execution.
+
 import os
 import subprocess
 import argparse
@@ -47,7 +72,7 @@ parser.add_argument('--dsn', type=str, help='postgres dsn', default=dsn_default)
 parser.add_argument('--always_update', action='store_true', default=False)
 
 parser.add_argument('--verbose', action='store_true', help='verbose')
-
+# update_imposmauto(config): This function performs an incremental update of the database using the Imposm tool.
 def update_imposmauto(config):
     logger.info('Incremental update - STARTED')
     subprocess.run([config.imposm, 'run', '-config', config.config, '-mapping', config.mapping, '-connection', config.dsn, '-srid', '4326', '-cachedir', config.cachedir, '-diffdir', config.diffdir, '-expiretiles-dir', config.expiredir, '-expiretiles-zoom', '16'], check=True)
@@ -82,8 +107,10 @@ def fetch_extract(config, url):
         return False
     else:
         return True
+    
 
-def fetch_extracts(config, extracts):
+
+def fetch_extracts(config, extracts):# fetch_extract(config, url): This function downloads a specific extract of OSM data from a given URL.
     start = datetime.utcnow()
     logger.info('Fetch extracts: START')
     fetched = False
@@ -95,7 +122,7 @@ def fetch_extracts(config, extracts):
     telemetry_log('fetch_extracts', start, end)
     return fetched
 
-def import_extract(config, pbf, cache, incremental):
+def import_extract(config, pbf, cache, incremental): # import_extract(config, pbf, cache, incremental): This function imports a specific extract into the database.
     logger.info('Import of {0} : START'.format(pbf))
     start = datetime.utcnow()
     imposm_args = [config.imposm, 'import', '-mapping', config.mapping, '-read', config.pbfdir + "/" + pbf, '-srid', '4326', cache, '-cachedir', config.cachedir]
@@ -106,7 +133,7 @@ def import_extract(config, pbf, cache, incremental):
     telemetry_log('import_extract', start, end)
     logger.info('import of {0}: DONE'.format(pbf))
 
-def import_write(config, incremental):
+def import_write(config, incremental):# import_write(config, incremental): This function writes the imported data to the database.
     logger.info('writing of OSM tables: START')
     start = datetime.utcnow()
     imposm_args = [config.imposm, 'import', '-mapping', config.mapping, '-write', '-connection', config.dsn, '-srid', '4326', '-cachedir', config.cachedir]
@@ -117,7 +144,8 @@ def import_write(config, incremental):
     telemetry_log('import_write', start, end, {'dsn': config.dsn})
     logger.info('Write of OSM tables: DONE')
 
-def import_rotate(config, incremental):
+def import_rotate(config, incremental):# import_rotate(config, incremental): This function rotates the tables in the database after data has been written.
+
     logger.info('Table rotation: START')
     start = datetime.utcnow()
     imposm_args = [config.imposm, 'import', '-mapping', config.mapping, '-connection', config.dsn, '-srid', '4326', '-deployproduction', '-cachedir', config.cachedir]
@@ -129,7 +157,8 @@ def import_rotate(config, incremental):
     telemetry_log('import_rotate', start, end, {'dsn': config.dsn})
     logger.info('Table rotation: DONE')
 
-def import_extracts(config, extracts, incremental):
+def import_extracts(config, extracts, incremental):# import_extracts(config, extracts, incremental): This function imports multiple extracts into the database.
+
     imported = {}
     for e, i in zip(extracts, range(len(extracts))):
         if i == 0:
@@ -143,12 +172,13 @@ def import_extracts(config, extracts, incremental):
         imported[pbf] = True
         import_extract(config, pbf, cache, incremental)
 
-def import_extracts_and_write(config, extracts, incremental):
+def import_extracts_and_write(config, extracts, incremental):# import_extracts_and_write(config, extracts, incremental): This function imports multiple extracts and writes them to the database
     import_extracts(config, extracts, incremental)
     import_write(config, incremental)
     import_rotate(config, incremental)
 
-async def provision_database_async(postgres_dsn, osm_dsn):
+async def provision_database_async(postgres_dsn, osm_dsn):# provision_database_async(postgres_dsn, osm_dsn): This function creates the database and enables necessary PostgreSQL extensions.
+
     async with aiopg.connect(dsn=postgres_dsn) as conn:
         cursor = await conn.cursor()
         try:
@@ -160,7 +190,7 @@ async def provision_database_async(postgres_dsn, osm_dsn):
         await cursor.execute('CREATE EXTENSION IF NOT EXISTS postgis')
         await cursor.execute('CREATE EXTENSION IF NOT EXISTS hstore')
 
-async def provision_database_soundscape_async(osm_dsn):
+async def provision_database_soundscape_async(osm_dsn): # provision_database_soundscape_async(osm_dsn): This function executes additional SQL scripts in the database.
     ingest_path = os.environ['INGEST']
     async with aiopg.connect(dsn=osm_dsn) as conn:
         cursor = await conn.cursor()
@@ -169,18 +199,18 @@ async def provision_database_soundscape_async(osm_dsn):
         with open(ingest_path + '/' + 'tilefunc.sql', 'r') as sql:
             await cursor.execute(sql.read())
 
-def provision_database(postgres_dsn, osm_dsn):
+def provision_database(postgres_dsn, osm_dsn):# provision_database(postgres_dsn, osm_dsn): This function calls provision_database_async and logs the time taken.
     start = datetime.utcnow()
     loop = asyncio.get_event_loop()
     loop.run_until_complete(provision_database_async(postgres_dsn, osm_dsn))
     end = datetime.utcnow()
     telemetry_log('provision_database', start, end, {'dsn': postgres_dsn})
 
-def provision_database_soundscape(osm_dsn):
+def provision_database_soundscape(osm_dsn):# provision_database_soundscape(osm_dsn): This function calls provision_database_soundscape_async.
     loop = asyncio.get_event_loop()
     loop.run_until_complete(provision_database_soundscape_async(osm_dsn))
 
-def execute_kube_updatemodel_provision_and_import(config, updated):
+def execute_kube_updatemodel_provision_and_import(config, updated):# execute_kube_updatemodel_provision_and_import(config, updated): This function provisions the database and imports data, and updates the status of the database in Kubernetes.
     namespace = os.environ['NAMESPACE']
     kube = SoundscapeKube(None, namespace)
     kube.connect()
@@ -245,7 +275,7 @@ def execute_kube_updatemodel_provision_and_import(config, updated):
             logger.warning('failed provisioning database "{0}: {1}"'.format(d['name'], e))
     logger.info('Completed provision and import')
 
-def execute_kube_sync_deployments(manager, desc):
+def execute_kube_sync_deployments(manager, desc):# execute_kube_sync_deployments(manager, desc): This function synchronizes the Kubernetes deployments with the current state of the databases.
     logger.info('Synchronize {0} with databases'.format(desc))
 
     seen_dbs = []
@@ -272,7 +302,7 @@ def execute_kube_sync_deployments(manager, desc):
         else:
             logger.info('Deployment for \'{0}\' is running'.format(db['name']))
 
-def execute_kube_sync_tile_services(config):
+def execute_kube_sync_tile_services(config):# execute_kube_sync_tile_services(config): This function manages the tile services in Kubernetes.
     start = datetime.utcnow()
     namespace = os.environ['NAMESPACE']
     kube = SoundscapeKube(None, namespace)
@@ -283,10 +313,10 @@ def execute_kube_sync_tile_services(config):
     end = datetime.utcnow()
     telemetry_log('sync_tile_services', start, end)
 
-def execute_kube_sync_database_services(config):
+def execute_kube_sync_database_services(config):# execute_kube_sync_database_services(config): This function calls execute_kube_sync_tile_services.
     execute_kube_sync_tile_services(config)
 
-def execute_kube_updatemodel(config):
+def execute_kube_updatemodel(config):# execute_kube_updatemodel(config): This function is the main function that manages the entire process of fetching extracts, provisioning databases, importing data, and managing Kubernetes deployments.
     # N.B. launch tile services and metrics for already functioning databases
     #      since import of new data can/will take a while
     if config.dynamic_db:
@@ -312,7 +342,7 @@ def execute_kube_updatemodel(config):
             fetch_delay -= rescan_delay
         initial_import = False
 
-def telemetry_log(event_name, start, end, extra=None):
+def telemetry_log(event_name, start, end, extra=None):# telemetry_log(event_name, start, end, extra=None): This function logs telemetry data for various operations.
     if args.telemetry:
         if extra == None:
             extra = {}
@@ -347,3 +377,26 @@ try:
 finally:
     print('terminating logging')
     logging.shutdown()
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
