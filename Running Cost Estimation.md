@@ -7,6 +7,12 @@ Things missing from price calculations
     3.How this application is designed to scale if at all? Can someone account for this in the code? My guess  scaling up instaed of out eg bigger servers.
     4.In the deployment sizing there are references to kubernetes notes, assuming that these nodes run on the single server.
     5.No point in pricing up test and dev infrastructure. As you turn this on to use it then turn it back off again making cost negligable.
+    6.I have priced a PAY AS YOU GO (PAYG) option and a 1yr Reserved Instances Option. 
+    You would typically understand your peak demand and pay for a reservation for a better price. 
+    
+    If the application was modified to scale horizontally it could be more efficient. 
+    A serverless architecture may also be more efficient if the code is efficient however I dont have much knowledge in this area 
+    I am happy to ask the Microsoft engineering team WHY they chose Azure Kubernetes Services over other architectures. 
 
 Azure UK South Pricing
 Compute Costs Per Anum Backend £
