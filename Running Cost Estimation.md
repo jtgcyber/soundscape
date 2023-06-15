@@ -1,4 +1,13 @@
+Soundscape Azure SKU's Referenced
+small_db_size = 90
+large_db_size = 1100
+small_cpu_sku = 'Standard_DS3_v2' PAYG Price = £155.68 PM
+large_cpu_sku = 'Standard_DS4_v2' PAYG Price = ££311.95 PM
+small_db_sku = 'Standard_D2s_v3'  PayG Price = £63.34
+large_db_sku = 'Standard_D4s_v3'  PayG Price = £126.67
+
 Soundsscape Deployment mode sizes
+
 
 scale_parameters = {
     'test': {
