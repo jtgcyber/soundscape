@@ -1,10 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-#python soundscape_provision.py --subscription "25eaed77-dc73-4d69-af3e-e475d5edb52c" --name "soundscape-POC" --resource-group "soundscape" --location "uk-south" --namespace "scCluster" --scale "test"
 
-#python soundscape_provision.py --subscription "25eaed77-dc73-4d69-af3e-e475d5edb52c" --name "soundscape-POC" --resource-group "soundscape" --keyvault-name "jtgTestKV" --location "uksouth" --scale "test" --service-version "0.1" --azure-container-registry-name "jtgacr" --container-registry-RG "containerregistrytest" --kubernetes-version "1.27.1"
-#python soundscape_provision.py --subscription "25eaed77-dc73-4d69-af3e-e475d5edb52c" --name "soundscape-POC" --resource-group "soundscape" --keyvault-name "jtgTestKV" --location "uksouth" --scale "test" --service-version "0.1" --azure-container-registry-name "jtgacr" --container-registry-RG "containerregistrytest" --kubernetes-version "1.27.1"
+#python soundscape_provision.py --subscription $AZURE_SUBSCRIPTION_ID --name "soundscape-poc" --resource-group "soundscape" --keyvault-name "jtgTestKV" --location "uksouth" --scale "test" --service-version "0.1" --azure-container-registry-name "jtgacr" --container-registry-RG "containerregistrytest" --kubernetes-version "1.27.1"
 
 # YOU MUST CREATE A UNIQUE KEYVAULT AHEAD OF TIME. EITHER PRECREATE YOUR RESOURCE GROUP AND CREATE THE KEYVAULT THERE. OR HAVE A SEPEATE RESROUCE GROUP THAT HOSTS OTHER KV's
 # YOU MUST ALSO HAVE CREATED A CONTAINER REGISTRY AND PASS IN ITS NAME AND RESOURCE GROUP - THE REGISTRY MUST BE PREMIUM SKU
