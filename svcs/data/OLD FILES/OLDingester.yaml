@@ -44,26 +44,37 @@ spec:
       containers:
         - name: {{ .Chart.Name }}-ingester
           image: {{ .Values.containerRegistry }}/{{ .Values.ingesterImage }}:{{ required "A valid .Values.soundscapeImageVersion entry required!" .Values.soundscapeImageVersion }}
-          command: ["/tools/osmingester"]
-          args: ["--osm2pgsql", "/tools/osm2pgsql", "--pbf", "/config/pbf", "--mapper", "/config/soundscape.lua", "--provision-sql", "/config/provision.sql", "--provision-sql", "/config/postgis-vt-util.sql", "--provision-sql", "/config/tilefunc.sql", "--work", "/work", "--dsn", "/secret/dsn2"]
           securityContext:
             allowPrivilegeEscalation: false
+          env:
+            - name: GEN_REGIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: region
+            - name: LOOP_TIME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: loopInterval
+            - name: INGEST_FLAGS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: ingestFlags
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
-            - mountPath: /work
+            - mountPath: /tiles
               name: {{ .Chart.Name }}-ingester-volume
-            - mountPath: /config
-              name: {{ .Chart.Name }}-ingester-config-volume
-              readOnly: true
-            - mountPath: /secret
-              name: {{ .Chart.Name }}-database-volume
-              readOnly: true
+            - mountPath: /mapping
+              name: {{ .Chart.Name }}-ingester-mapping-volume
       volumes:
-        - name: {{ .Chart.Name }}-ingester-config-volume
+        - name: {{ .Chart.Name }}-ingester-mapping-volume
           configMap:
-            name: {{ .Chart.Name }}-ingester-config
-        - name: {{ .Chart.Name }}-database-volume
-          secret:
-            secretName: {{ .Chart.Name }}-database
+            name: {{ .Chart.Name }}-ingester-mapping-config
   updateStrategy:
     type: RollingUpdate
   volumeClaimTemplates:
@@ -74,4 +85,4 @@ spec:
         storageClassName: {{ .Chart.Name }}-sc
         resources:
           requests:
-            storage: {{ .Values.config.ingester.workingStorage }}
+            storage: {{ .Values.config.regionStorage }}

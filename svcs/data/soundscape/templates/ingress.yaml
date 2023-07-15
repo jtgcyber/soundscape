@@ -15,10 +15,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - "*.yourservicesdomain.com"
+    - "*.jtgcyber.com"
     secretName: yourservicesdomain-tls
   rules:
-  - host: "*.yourservicesdomain.com"
+  - host: "*.jtgcyber.com"
     http:
       paths:
       - path: /tiles/?(.*)
