@@ -3,14 +3,14 @@
 # GPT ASSISTED
 telemetryKey: <SOME TELEMETRY KEY>
 
-containerRegistry: <YOUR FAVORITE CONTAINER REGISTRY>
-keyVault: <Your favorite keyvault>
+containerRegistry: 
+keyVault: 
 
 ingesterImage: soundscape/ingest
 tilesrvImage: soundscape/tilesrv
 
 config:
-  region: washington
+  region: california
   regionStorage: 30Gi
   loopInterval: 14400
   ingestFlags: ""

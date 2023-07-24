@@ -2,70 +2,112 @@
 # Licensed under the MIT License.
 
 ---
-apiVersion: v1  # API version for the Service object
-kind: Service  # This is a Service object
-metadata:  # Metadata for the Service
-  name: {{ .Chart.Name }}-ingester-service  # Name of the Service
-  labels:  # Labels for the Service
-    app: {{ .Chart.Name }}  # Label for the app name
-    tier: ingestion  # Label for the tier
-    role: ingester-service  # Label for the role
-spec:  # Specification for the Service
-  selector:  # Labels for the pods that this Service should direct traffic to
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}-ingester-service
+  labels:
+    app: {{ .Chart.Name }}
+    tier: ingestion
+    role: ingester-service
+spec:
+  selector:
     app: {{ .Chart.Name }}
     tier: ingestion
     role: ingester
-  clusterIP: None  # This Service does not have a cluster IP, it's a headless service
-
+  clusterIP: None
 ---
-apiVersion: apps/v1  # API version for the StatefulSet object
-kind: StatefulSet  # This is a StatefulSet object
-metadata:  # Metadata for the StatefulSet
-  name: {{ .Chart.Name}}-ingester  # Name of the StatefulSet
-spec:  # Specification for the StatefulSet
-  serviceName: {{ .Chart.Name }}-ingester-service  # The name of the Service that governs this StatefulSet
-  replicas: 1  # The number of pod replicas
-  selector:  # Labels for the pods that belong to this StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Chart.Name}}-ingester
+spec:
+  serviceName: {{ .Chart.Name }}-ingester-service
+  replicas: 1
+  selector:
     matchLabels:
       app: {{ .Chart.Name }}
       tier: ingestion
       role: ingester
-  template:  # The template for the pods in this StatefulSet
-    metadata:  # Metadata for the pods
-      labels:  # Labels for the pods
+  template:
+    metadata:
+      labels:
         app: {{ .Chart.Name }}
         tier: ingestion
         role: ingester
-    spec:  # Specification for the pods
-      serviceAccountName: {{ .Chart.Name}}-ingester-serviceaccount  # The name of the ServiceAccount for the pods
-      securityContext:  # Security settings for the pods
-        runAsUser: 1000  # The UID to run the pod as
-        runAsGroup: 1000  # The GID to run the pod as
-        fsGroup: 1000  # The GID for volume permission
-      containers:  # The list of containers in the pods
-        - name: {{ .Chart.Name }}-ingester  # The name of the container
-          image: {{ .Values.containerRegistry }}/{{ .Values.ingesterImage }}:{{ required "A valid .Values.soundscapeImageVersion entry required!" .Values.soundscapeImageVersion }}  # The image for the container
-          command: ["/tools/osmingester"]  # The command to run in the container
-          args: ["--osm2pgsql", "/tools/osm2pgsql", "--pbf", "/config/pbf", "--mapper", "/config/soundscape.lua", "--provision-sql", "/config/provision.sql", "--provision-sql", "/config/postgis-vt-util.sql", "--provision-sql", "/config/tilefunc.sql", "--work", "/work", "--dsn", "/secret/dsn2"]  # The arguments for the command
-          securityContext:  # Security settings for the container
-            allowPrivilegeEscalation: false  # The container is not allowed to escalate privileges
-          volumeMounts:  # The volumes to mount in the container
-            - mountPath: /work  # The path where the volume is mounted
-              name: {{ .Chart.Name }}-ingester-volume  # The name of the volume
-            - mountPath: /config  # The path where the volume is mounted
-              name: {{ .Chart.Name }}-ingester-config-volume  # The name of the volume
-              readOnly: true  # The volume is read-only
-            - mountPath: /secret  # The path where the volume is mounted
-              name: {{ .Chart.Name }}-database-volume  # The name of the volume
-              readOnly: true  # The volume is read-only
-      volumes:  # The list of volumes for the pods
-        - name: {{ .Chart.Name }}-ingester-config-volume  # The name of the volume
-          configMap:  # The volume is a ConfigMap
-            name: {{ .Chart.Name }}-ingester-config  # The name of the ConfigMap
-        - name: {{ .Chart.Name }}-database-volume  # The name of the volume
-          secret:  # The volume is a Secret
-            secretName: {{ .Chart.Name }}-database  # The name of the Secret
-  updateStrategy:  # The strategy for updating the pods
-    type: RollingUpdate  # The update is done as a rolling update
-  volumeClaimTemplates:  # The list of PersistentVolumeClaims for the pods
-    - metadata:  # Metadata
+    spec:
+      serviceAccountName: {{ .Chart.Name}}-ingester-serviceaccount
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: {{ .Chart.Name }}-ingester
+          image: {{ .Values.containerRegistry }}/{{ .Values.ingesterImage }}:{{ required "A valid .Values.soundscapeImageVersion entry required!" .Values.soundscapeImageVersion }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            - name: GEN_REGIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: region
+            - name: LOOP_TIME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: loopInterval
+            - name: INGEST_FLAGS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: ingestFlags
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POSTGIS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dsn
+                  key: user
+            - name: POSTGIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dsn
+                  key: password    
+            - name: POSTGIS_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dsn
+                  key: host
+            - name: POSTGIS_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dsn
+                  key: port 
+            - name: POSTGIS_DBNAME
+              valueFrom:
+                secretKeyRef:
+                  name: dsn
+                  key: dbname                                                                       
+          volumeMounts:
+            - mountPath: /tiles
+              name: {{ .Chart.Name }}-ingester-volume
+            - mountPath: /mapping
+              name: {{ .Chart.Name }}-ingester-mapping-volume
+      volumes:
+        - name: {{ .Chart.Name }}-ingester-mapping-volume
+          configMap:
+            name: {{ .Chart.Name }}-ingester-mapping-config
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+    - metadata:
+        name: {{ .Chart.Name }}-ingester-volume
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Chart.Name }}-sc
+        resources:
+          requests:
+            storage: {{ .Values.config.regionStorage }}

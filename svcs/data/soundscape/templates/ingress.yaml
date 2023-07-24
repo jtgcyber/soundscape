@@ -15,10 +15,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - "*.jtgcyber.com"
-    secretName: yourservicesdomain-tls
+    - "soundscape.jgcyber.com"
+    secretName: jgcyber-prod-tls
   rules:
-  - host: "*.jtgcyber.com"
+  - host: "soundscape.jgcyber.com"
     http:
       paths:
       - path: /tiles/?(.*)
@@ -27,32 +27,4 @@ spec:
           service:
             name: {{ .Chart.Name }}-tile-service
             port:
-              number: 80
-      - path: /search/?(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: {{ .Chart.Name }}-search-service
-            port:
-              number: 80
-      - path: /nearby/?(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: {{ .Chart.Name }}-nearby-service
-            port:
-              number: 80
-      - path: /lookup/?(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: {{ .Chart.Name }}-lookup-service
-            port:
-              number: 80
-      - path: /suggest/?(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: {{ .Chart.Name }}-suggest-service
-            port:
-              number: 80
+              number: 8080

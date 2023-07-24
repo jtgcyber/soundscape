@@ -1,46 +1,23 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-#export AZURE_SUBSCRIPTION_ID=$(az account list --query "[?isDefault].id" -o tsv)
-
-#python soundscape_provision.py --subscription $AZURE_SUBSCRIPTION_ID --name "soundscape-poc" --resource-group "soundscape" --keyvault-name "jtgTestKV" --location "uksouth" --scale "test" --service-version "1.0" --azure-container-registry-name "jtgacr" --container-registry-RG "containerregistrytest" --kubernetes-version "1.27.1"
-
-# YOU MUST CREATE A UNIQUE KEYVAULT AHEAD OF TIME. EITHER PRECREATE YOUR RESOURCE GROUP AND CREATE THE KEYVAULT THERE. OR HAVE A SEPEATE RESROUCE GROUP THAT HOSTS OTHER KV's
-# YOU MUST ALSO HAVE CREATED A CONTAINER REGISTRY AND PASS IN ITS NAME AND RESOURCE GROUP - THE REGISTRY MUST BE PREMIUM SKU
-# Must also have helm and depedancies installed "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
-#You must also install kubectl
-#https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
-#you need to install the AKS preview extention to Azure CLI
-
-
-#YOU NEED TO build and push your docker images to your container registry before provisioning 
-
 import argparse
 from functools import cmp_to_key
 import json
 import os
 import re
-import asyncio
 import subprocess
+import asyncio
 import time
 import uuid
-import semver
-import tempfile
-import yaml
-import shlex
 
-#from kubescape import SoundscapeKube
-from azure.core.exceptions import AzureError
+import semver
+
 from azure.identity import DefaultAzureCredential
-from azure.mgmt.resource import ResourceManagementClient
-from azure.mgmt.resource import SubscriptionClient
+from azure.mgmt.resource import ResourceManagementClient, SubscriptionClient
 from azure.mgmt.containerregistry import ContainerRegistryManagementClient
 from azure.mgmt.authorization import AuthorizationManagementClient
 from azure.graphrbac import GraphRbacManagementClient
-from azure.mgmt.keyvault import KeyVaultManagementClient
-from azure.keyvault.secrets import SecretClient
-
-
 
 small_db_size = 90
 large_db_size = 1100
@@ -172,17 +149,16 @@ def determine_kubernetes_version(config, location, exclude_preview):
         '--output', 'json',
         '--location', location,
     ]
-    print("Running Command:\n",str(args))
 
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
 
-    orchestrators = output['values']
+    orchestrators = output['orchestrators']
     if exclude_preview:
         orchestrators = filter(lambda x: not x['isPreview'], orchestrators)
-    kube_versions = map(lambda o: str(o['version']), orchestrators)
+    kube_versions = map(lambda o: str(o['orchestratorVersion']), orchestrators)
     kube_versions = sorted(kube_versions, key=cmp_to_key(semver.cmp), reverse=True)
-    
+
     return kube_versions[0]
 
 def check_kubernetes_cluster_name(config, location):
@@ -195,7 +171,7 @@ def check_kubernetes_cluster_name(config, location):
         '--name', config['cluster_name'],
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     if completed.returncode == 0:
         print('ERROR: kubernetes service with name \'{0}\' already exists'.format(config['cluster_name']))
@@ -222,15 +198,10 @@ async def create_vnet_subnet(config, vnetsub_name, prefix, disable_network_polic
     if configure_postgres:
         args.extend(['--delegations', 'Microsoft.DBforPostgreSQL/flexibleServers'])
         args.extend(['--service-endpoints', 'Microsoft.Storage'])
-    
-    print("Running Command:\n",str(args))
+
     completed, stdout_data = await async_run_check(args, stdout=asyncio.subprocess.PIPE)
     output = json.loads(stdout_data.decode('ascii'))
     return output['id']
-
-
-
-
 
 async def create_vnet(config):
     args = [
@@ -246,7 +217,6 @@ async def create_vnet(config):
         '--output', 'none'
     ]
 
-    print("Running Command:\n",str(args))
     await async_run_check(args)
 
     snets = config['snets']
@@ -256,7 +226,7 @@ async def create_vnet(config):
         disable_network_policy = snets[snet].get('disable_network_policy', False)
         configure_postgres = snets[snet].get('configure_postgres', False)
         snet_ids[snet] =  await create_vnet_subnet(config, snets[snet]['name'], ip_mask, disable_network_policy, configure_postgres)
-    
+
     return snet_ids
 
 def delete_vnet_subnet(config, vnet_subname):
@@ -323,7 +293,7 @@ async def create_kubernetes_cluster(config, location, mi_cluster, podsub_id, nod
         '--generate-ssh-keys',
         '--node-count', str(config['parameters']['node_count']),
         '--node-vm-size', config['parameters']['vm_sku'],
-        '--os-sku', 'AzureLinux',
+        '--os-sku', 'CBLMariner',
         '--load-balancer-sku', 'standard',
         '--auto-upgrade-channel', 'node-image',
         '--enable-addons', addons,
@@ -348,8 +318,7 @@ async def create_kubernetes_cluster(config, location, mi_cluster, podsub_id, nod
         os.remove(os.environ['HOME'] + '/.azure/aksServicePrincipal.json')
     except Exception:
         pass
-    
-    print("Running Command:\n",str(args))
+
     await run_with_retry_async(args, 5)
     end = time.perf_counter()
     print('TASK:   create kubernetes cluster: DONE took {0:.2f}s'.format(end-start))
@@ -368,7 +337,7 @@ async def delete_kubernetes_cluster(config):
         '--output', 'none',
         '--yes'
     ]
-    print("Running Command:\n",str(args))
+
     await async_run_check(args)
     print('TASK:   delete kubernetes cluster: DONE')
 
@@ -383,15 +352,11 @@ def get_aks_credentials(config):
         '--name', config['cluster_name'],
         '--overwrite-existing'
     ]
-    print("Running Command:\n",str(args))
+
     subprocess.run(args, check=True)
 
 def get_container_registry_info(config, container_registry):
-    registry = config['acr_client'].registries.get(config['container_registry_RG'], config['container_registry_name']) # resource group = CR RG - container_registry = ACR Name
-    if registry.sku.tier != 'Premium':
-        print('Only Premium SKU for ACR is supported. Use Azure CLI to change tier. az acr update --name CR_NAME --sku Premium')
-        exit() # This will terminate the script
-
+    registry = config['acr_client'].registries.get(config['infra']['resource_group'], container_registry)
     return registry.login_server, registry.id
 
 async def allow_pod_mi_to_access_keyvault_certificates(config, mi_pod):
@@ -400,15 +365,14 @@ async def allow_pod_mi_to_access_keyvault_certificates(config, mi_pod):
         'az',
         'keyvault',
         'set-policy',
-        '--subscription', config['subscription_id'],
-        '--name', config['kv_name'],
+        '--subscription', config['infra']['subscription_id'],
+        '--name', config['infra']['keyvault_name'],
         '--spn', mi_pod['clientId'],
         '--certificate-permissions', 'get',
         '--key-permissions', 'get',
         '--secret-permissions', 'get',
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
     await run_with_retry_async(args, 5)
 
 def helm_init(config):
@@ -419,7 +383,6 @@ def helm_init(config):
         '--namespace', config['namespace'],
         'ingress-nginx', 'https://kubernetes.github.io/ingress-nginx'
     ]
-    print("Running Command:\n",str(args))
 
     subprocess.run(args, check=True)
 
@@ -429,24 +392,20 @@ def helm_init(config):
         'update',
         '--namespace', config['namespace'],
     ]
-    print("Running Command:\n",str(args))
 
     subprocess.run(args, check=True)
 
-#'--version', nginx_chart_version,     REMOVED THIS TO SEE IF IT INSTALLS WITHOUT SPECIFYING VERSION
-#'--set', 'controller.image.registry=mcr.microsoft.com/oss/kubernetes', Pulled this out because there is no function to add this to my container registry first so it fails
 def nginx_ingress_install(config, name, ip_address, identity_name):
     parameters = config['parameters']
     args = [
         'helm',
-        'upgrade',
-        '-i',
+        'install',
         name,
         'ingress-nginx/ingress-nginx',
-        
+        '--version', nginx_chart_version,
         '--namespace', config['namespace'],
         '--set-string', 'controller.extraArgs.enable-ssl-chain-completion=false',
-        
+        '--set', 'controller.image.registry=mcr.microsoft.com/oss/kubernetes',
         '--set', 'controller.image.digest=null',
         '--set', 'controller.allowSnippetAnnotations=false',
         '--set', 'controller.replicaCount={0}'.format(parameters['nginx_count']),
@@ -457,96 +416,36 @@ def nginx_ingress_install(config, name, ip_address, identity_name):
         '-f', 'soundscape/other/nginx-csi-patch.yaml'
     ]
 
-
-    # if nginx_override:
-    #     args.extend(['--set', 'controller.image.image={0}'.format(nginx_image_name)])
+    if nginx_override:
+        args.extend(['--set', 'controller.image.image={0}'.format(nginx_image_name)])
 
     if not parameters['nginx_log']:
         args.extend(['--set-string', 'controller.config.disable-access-log=true'])
-    print("Running Command:\n",str(args))
+
     subprocess.run(args, check=True)
 
 def service_install(config, container_registry_login, release, tenant):
-    #print ("Waiting 30 seconds for container provision")
-    #time.sleep(30)
     args = [
         'helm',
-        'upgrade',
-        '-i',
+        'install',
         '--namespace', config['namespace'],
         'soundscape-service',
         'soundscape'
     ]
 
     parameters = config['parameters']
-    if parameters.get('values'):
+    if parameters['values']:
         for v in parameters['values']:
             args.extend(['--values', 'soundscape/' + v])
 
     args.extend(['--set', 'soundscapeImageVersion=' + release,
                  '--set', 'containerRegistry={0}'.format(container_registry_login),
-                 '--set', 'keyVault={0}'.format(config['kv_name']),
+                 '--set', 'keyVault={0}'.format(config['infra']['keyvault_name']),
                  '--set', 'tenantId={0}'.format(tenant),
                  '--set', 'subscription_id={0}'.format(config['subscription_id'])
     ])
-    print("Running Command:\n",str(args))
+
     subprocess.run(args, check=True)
-
-# def create_kubectl_secret(secret_name, namespace, data_dict): #I added this function
-#     # Create a temporary file
-#     with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp:
-#         # Write the dictionary to the file as YAML
-#         yaml.dump({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": secret_name, "namespace": namespace}, "stringData": data_dict}, temp)
-
-#     # Run kubectl to create the secret
-#     try:
-#         args = [
-#         'kubectl',
-#         'apply',
-#         '-f', 
-#         temp.name]      
-#         print("Running Command:\n",str(args))
-        
-#         subprocess.run(args, check=True, capture_output=True)
-#     except subprocess.CalledProcessError as e:
-#         print(f"Command failed with exit code {e.returncode}")
-#         if e.stdout:
-#             print(f"Standard output:\n{e.stdout.decode()}")
-#         if e.stderr:
-#             print(f"Standard error:\n{e.stderr.decode()}")
-
-def create_kubectl_secret(secret_name, namespace, data_dict): #args when called ('dsn2',config['namespace'],database_desc)
-    dsn = data_dict['dsn2']
-    args = f"kubectl create secret generic {secret_name} --from-literal=dsn={shlex.quote(dsn)} --namespace={namespace}"
-    print("Running Command:\n",str(args))
-    subprocess.run(args, check=True)
-
-
-def store_secret_in_keyvault(credential,keyvault_name, db_desc):
-
-#        db_desc = {
-#        'name': 'soundscape-database',
-#        'dsn2': 'postgresql://{user}:{password}@{host}:5432/osm'
-#    } This contains server hostname, port, dbname, user and password
-
-    
-   
-
-    # Create a credential object using the DefaultAzureCredential class.
-    # It automatically uses the correct method based on the environment.
-    # In a development environment, it uses the Azure CLI credentials.
-    # In Azure, it uses Managed Identity.
-    
-
-    # Create a SecretClient object.
-    secret_client = SecretClient(vault_url=f"https://{keyvault_name}.vault.azure.net/", credential=credential)
-
-    # Store the secret in Azure KeyVault.
-    secret_client.set_secret(db_desc['name'], db_desc['dsn2'])
-
-
-    
-    
 
 def check_for_secret(config, secret):
 
@@ -557,7 +456,6 @@ def check_for_secret(config, secret):
         'secret',
         secret
     ]
-    print("Running Command:\n",str(args))
 
     run_with_retry(args, 5, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
@@ -573,7 +471,7 @@ def stress_install(config, container_registry_login, service_version):
         'soundscape-stress',
         '--image', image
     ]
-    print("Running Command:\n",str(args))
+
     run_with_retry(args, 5)
 
 def service_upgrade(config, service_version):
@@ -602,7 +500,6 @@ async def create_dns_zone(config, zone_name):
         '--name',  zone_name,
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
 
     await async_run_check(args)
 
@@ -629,7 +526,6 @@ async def create_dns_zone_records(config, zone_name, zone_suffix, records):
         ]
 
         print('TASK:\t{0} A {1}'.format(name, ip_addr))
-        print("Running Command:\n",str(args))
         await async_run_check(args)
 
 async def delete_dns_zone(config, zone_name):
@@ -644,7 +540,7 @@ async def delete_dns_zone(config, zone_name):
         '--name', zone_name,
         '--yes'
     ]
-    print("Running Command:\n",str(args))
+
     await async_run(args)
 
 async def create_link_dns_zone(config, zone_name, link_name):
@@ -663,7 +559,7 @@ async def create_link_dns_zone(config, zone_name, link_name):
         '--name', link_name,
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
+
     await async_run_check(args)
 
 async def delete_link_dns_zone(config, zone_name, link_name):
@@ -681,7 +577,7 @@ async def delete_link_dns_zone(config, zone_name, link_name):
         '--output', 'none',
         '--yes'
     ]
-    print("Running Command:\n",str(args))
+
     await async_run_check(args)
 
 async def create_private_endpoint(config, subnet_name, resource_id, group_id, endpt_name):
@@ -702,7 +598,7 @@ async def create_private_endpoint(config, subnet_name, resource_id, group_id, en
         '--connection-name', endpt_name,
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed, stdout_data = await async_run_check(args, stdout=subprocess.PIPE)
     output = json.loads(stdout_data.decode('ascii'))
     interface_id = output['networkInterfaces'][0]['id']
@@ -716,14 +612,14 @@ async def create_private_endpoint(config, subnet_name, resource_id, group_id, en
         '--ids', interface_id,
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed, stdout_data = await async_run_check(args, stdout=subprocess.PIPE)
     output = json.loads(stdout_data.decode('ascii'))
     records = {}
     for config in output['ipConfigurations']:
         if 'privateLinkConnectionProperties' in config:
             k = config['privateLinkConnectionProperties']['fqdns'][0]
-            v = config['privateIPAddress']
+            v = config['privateIpAddress']
             records[k] = v
     return records
 
@@ -739,10 +635,8 @@ async def delete_private_endpoint(config, endpt_name):
         '--name', endpt_name,
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
-    await async_run_check(args)
-# used str.lower on server name beacuse it only supports lowercase and hyphons for name
 
+    await async_run_check(args)
 
 async def db_create_postgres(config, storage, sku, pgsub_id):
 
@@ -754,7 +648,7 @@ async def db_create_postgres(config, storage, sku, pgsub_id):
         '--subscription', config['subscription_id'],
         '--resource-group', config['resource_group'],
         '--location', config['location'],
-        '--name', str.lower(config['db_name']),
+        '--name', config['db_name'],
         '--admin-user', 'osm',
         '--tier', 'GeneralPurpose',
         '--sku-name', sku,
@@ -766,15 +660,14 @@ async def db_create_postgres(config, storage, sku, pgsub_id):
         '--output', 'json',
         '--only-show-errors'
     ]
-    print("Running Command:\n",str(args))
+
     completed, stdout_data = await async_run_check(args, stdout=asyncio.subprocess.PIPE)
     output = json.loads(stdout_data.decode('ascii'))
     server_hostname = output['host']
     password = output['password']
 
-    dsn_template = 'postgresql://{user}:{password}@{host}:5432/osm'
-    #dsn2_template = 'host={host} port=5432 dbname=osm user={user} password={password}'
-    dsn = dsn_template.format(host=server_hostname,
+    dsn2_template = 'host={host} port=5432 dbname=osm user={user} password={password}'
+    dsn = dsn2_template.format(host=server_hostname,
                                user='osm',
                                password=password)
     proto = {
@@ -790,12 +683,12 @@ async def db_create_postgres(config, storage, sku, pgsub_id):
         'set',
         '--subscription', config['subscription_id'],
         '--resource-group', config['resource_group'],
-        '--server-name', str.lower(config['db_name']),
+        '--server-name', config['db_name'],
         '--name', 'azure.extensions',
         '--value', 'postgis,hstore',
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
+
     await async_run_check(args)
     return proto
 
@@ -831,15 +724,15 @@ async def db_create(config, pgsub_id):
     print('TASK:   create database: DONE - took {0:.2f}s'.format(end-start))
     return dbdesc
 
-# def db_register(config, dbdesc):
+def db_register(config, dbdesc):
 
-#     # NOTE: alter the draft database secret to reflect endpoint ip rather than the DNS address
-#     # refactor once SoundscapeDb() is moved into soundscape_provision
+    # NOTE: alter the draft database secret to reflect endpoint ip rather than the DNS address
+    # refactor once SoundscapeDb() is moved into soundscape_provision
 
-# #    dbdesc['dsn2'] = re.sub(r"host=(\S*)",'host=' + ipAddr, dbdesc['dsn2'])
-#     kube = SoundscapeKube(None, config['namespace'])
-#     kube.connect()
-#     kube.register_database(dbdesc)
+#    dbdesc['dsn2'] = re.sub(r"host=(\S*)",'host=' + ipAddr, dbdesc['dsn2'])
+    kube = SoundscapeKube(None, config['namespace'])
+    kube.connect()
+    kube.register_database(dbdesc)
 
 async def db_delete(config):
     print('TASK:   delete database: STARTED')
@@ -858,7 +751,7 @@ def assign_pod_managed_identity_roles(config, node_resource_group, mi_pod):
         '--name', node_resource_group,
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
     node_resource_group_id = output['id']
@@ -874,7 +767,7 @@ def assign_pod_managed_identity_roles(config, node_resource_group, mi_pod):
         '--scope', node_resource_group_id,
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
+
     subprocess.run(args, check=True, stderr=subprocess.DEVNULL)
 
 def assign_cluster_managed_identity_roles(config, mi_cluster, nodesub_id):
@@ -890,7 +783,7 @@ def assign_cluster_managed_identity_roles(config, mi_cluster, nodesub_id):
         '--scope', nodesub_id,
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
+
     subprocess.run(args, check=True, stderr=subprocess.DEVNULL)
 
 def create_pod_identity(config, identity_name, mi_pod):
@@ -908,7 +801,6 @@ def create_pod_identity(config, identity_name, mi_pod):
         '--identity-resource-id', mi_pod['id'],
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
     subprocess.run(args, check=True)
 
 async def create_managed_identity(config, mi_name):
@@ -922,7 +814,7 @@ async def create_managed_identity(config, mi_name):
         '--name', mi_name,
        '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed, stdout_data = await async_run_check(args, stdout=asyncio.subprocess.PIPE)
     output = json.loads(stdout_data.decode('ascii'))
     return {
@@ -953,7 +845,7 @@ def get_cluster_node_resource_group(config):
         '--query', 'nodeResourceGroup',
         '-o', 'tsv'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     return completed.stdout.decode('ascii').strip()
 
@@ -970,7 +862,7 @@ def create_static_public_ip_for_ingress(config, node_resource_group):
         '--resource-group', node_resource_group,
         '--name', config['ip_name']
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
 
@@ -991,7 +883,6 @@ def fetch_file(account_name, container_name, file, file_dest):
         '-f', file_dest,
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
     subprocess.run(args, check=True)
 
 def fetch_azsecpak_template():
@@ -1003,14 +894,13 @@ def fetch_service_versions(config, container_registry):
         'acr',
         'repository',
         'show-tags',
-        '--name', config['container_registry_name'],
-        '--subscription', config['subscription_id'],
+        '--name', container_registry,
+        '--subscription', config['infra']['subscription_id'],
         '--repository', 'soundscape/ingest',
         '--orderby', 'time_desc',
         '--output', 'json'
     ]
     try:
-        print("Running Command:\n",str(args))
         completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
         output = json.loads(completed.stdout.decode('ascii'))
     except:
@@ -1031,7 +921,6 @@ def fetch_current_branch():
         '--short',
         'HEAD'
     ]
-    print("Running Command:\n",str(args))
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = completed.stdout.decode('ascii').strip()
     return output
@@ -1100,7 +989,6 @@ def check_azure_credentials(subscription_id, delete_task):
         'list-locations',
         '--output', 'none'
     ]
-    print("Running Command:\n",str(args))
     completed = subprocess.run(args)
     if completed.returncode != 0:
         print('TASK: Credentials likely expired, invoking \'az login\'')
@@ -1109,7 +997,6 @@ def check_azure_credentials(subscription_id, delete_task):
             'login',
             '--output', 'none'
         ]
-        print("Running Command:\n",str(args))
         subprocess.run(args, check=True)
 
     args = [
@@ -1119,7 +1006,6 @@ def check_azure_credentials(subscription_id, delete_task):
         'show',
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     output = json.loads(completed.stdout.decode('ascii'))
     user = output['userPrincipalName']
@@ -1133,7 +1019,6 @@ def check_azure_credentials(subscription_id, delete_task):
         '--assignee', user,
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     output = json.loads(completed.stdout.decode('ascii'))
 
@@ -1158,7 +1043,6 @@ def check_azure_feature(subscription_id, name, namespace):
     ]
 
     try:
-        print("Running Command:\n",str(args))
         completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
         output = json.loads(completed.stdout.decode('ascii'))
         registered = output['properties']['state'] == 'Registered'
@@ -1180,7 +1064,6 @@ def check_azure_provider(subscription_id, provider):
     ]
 
     try:
-        print("Running Command:\n",str(args))
         completed = subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         output = json.loads(completed.stdout.decode('ascii'))
         registered = output['registrationState'] == 'Registered'
@@ -1199,7 +1082,7 @@ def check_azure_extension(extension, version):
         '--name', extension,
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
     if semver.compare(output['version'], version) < 0:
@@ -1212,7 +1095,7 @@ def check_azure_version(version):
         'version',
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
 
@@ -1260,7 +1143,6 @@ def select_subscription(subscription):
         'list',
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
     for s in output:
@@ -1296,7 +1178,7 @@ def get_subscription_tenant(config):
         '--subscription', config['subscription_id'],
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
 
@@ -1307,11 +1189,12 @@ def get_keyvault_id(config):
         'az',
         'keyvault',
         'show',
-        '--subscription', config['subscription_id'],
-        '--name', config['kv_name'],
+        '--subscription', config['infra']['subscription_id'],
+        '--resource-group', config['infra']['resource_group'],
+        '--name', config['infra']['keyvault_name'],
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
+
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
 
@@ -1331,14 +1214,10 @@ def create_resource_group_if_necessary(config, resource_group):
     else:
         resource_group_params = {'location': config['location']}
         config['res_client'].resource_groups.create_or_update(resource_group, resource_group_params)
-
-        
         print('TASK: Created Resource group \'{0}\' in \'{1}\''.format(resource_group,
                                                                        config['location']))
         location = config['res_client'].resource_groups.get(resource_group).location
     return location
-
-
 
 def helm_release_container_registry(config):
 
@@ -1350,7 +1229,6 @@ def helm_release_container_registry(config):
         'soundscape-service',
         '--output', 'json'
     ]
-    print("Running Command:\n",str(args))
     completed = subprocess.run(args, check=True, stdout=subprocess.PIPE)
     output = json.loads(completed.stdout.decode('ascii'))
     (container_registry,_,_) =  output['containerRegistry'].partition('.')
@@ -1361,8 +1239,7 @@ async def create_resources_async(config, mi_cluster, podsub_id, nodesub_id, cont
 
     return await asyncio.gather(
         create_kubernetes_cluster(config, config['location'], mi_cluster, podsub_id, nodesub_id, container_registry_id),
-        db_create(config, pgsub_id) # This function returns a dictionary with db connection string
-        
+        db_create(config, pgsub_id)
     )
 
 def create_resources(config, mi_cluster, podsub_id, nodesub_id, container_registry_id, pgsub_id):
@@ -1435,7 +1312,7 @@ async def create_network_kv(config):
                                   'vault',
                                   config['kv_endpt'],
                                   config['snets']['cmn_snet']['name'],
-                                  config['kv_name'])
+                                  config['infra']['keyvault_name'])
 
 async def create_network_acr(config, container_registry):
 
@@ -1507,82 +1384,73 @@ def setup_environment(config, container_registry):
 
 def provision_service(config):
 
-    create_resource_group_if_necessary(config, config['resource_group']) # syncronous
-    
+    create_resource_group_if_necessary(config, config['resource_group'])
+
     if config['production']:
-        container_registry = config['container_registry_name']
+        container_registry = config['infra']['container_registry_release']
     else:
-        container_registry = config['container_registry_name']
+        container_registry = config['infra']['container_registry']
 
-
-
-    service_version = determine_service_version(config, container_registry, True) #sync
+    service_version = determine_service_version(config, container_registry, True)
     print('TASK: Service version \'{0}\''.format(service_version))
 
     print('TASK: Determine tenant: STARTED')
-    tenant = get_subscription_tenant(config) #sync
+    tenant = get_subscription_tenant(config)
     print('TASK: Determine tenant: DONE')
 
     print('TASK: check kubernetes cluster name free: STARTED')
-    check_kubernetes_cluster_name(config, config['location']) #sync
+    check_kubernetes_cluster_name(config, config['location'])
     print('TASK: check kubernetes cluster name free: DONE')
 
-    update_helm_chart(config) #sync - This function appears to try to go to Azure Storage and retreive stuff I dont have - Its related to secrets, probably certs for the ingress 
+    update_helm_chart(config)
 
     print('TASK: setup environment: STARTED')
-    (mi_cluster, mi_pod), (container_registry_login, container_registry_id, subnet_ids) = setup_environment(config, container_registry) # Appears to create managed identities and network components. SYNC that then uses asyncio.run(setup_environment_async)
+    (mi_cluster, mi_pod), (container_registry_login, container_registry_id, subnet_ids) = setup_environment(config, container_registry)
     print('TASK: setup environment: DONE')
 
     print('TASK: assign roles to cluster managed identity: STARTED')
-    assign_cluster_managed_identity_roles(config, mi_cluster, subnet_ids['node_snet']) #sync
+    assign_cluster_managed_identity_roles(config, mi_cluster, subnet_ids['node_snet'])
     print('TASK: assign roles to cluster managed identity: DONE')
 
     print('TASK: create resources in parallel: STARTED')
-    database_desc = create_resources(config, mi_cluster, subnet_ids['pod_snet'], subnet_ids['node_snet'], container_registry_id, subnet_ids['pg_snet']) # sync that then uses asyncio.run(create_resources_async)
+    database_desc = create_resources(config, mi_cluster, subnet_ids['pod_snet'], subnet_ids['node_snet'], container_registry_id, subnet_ids['pg_snet'])
     print('TASK: create resources in parallel: DONE')
-    print (database_desc)
-    
-    store_secret_in_keyvault(credential,config['kv_name'],database_desc)
-
-    create_kubectl_secret('dsn2',config['namespace'],database_desc)
-    node_resource_group = get_cluster_node_resource_group(config) # sync
+    node_resource_group = get_cluster_node_resource_group(config)
 
     print('TASK: assign roles to pod managed identity: STARTED')
-    assign_pod_managed_identity_roles(config, node_resource_group, mi_pod) # sync
+    assign_pod_managed_identity_roles(config, node_resource_group, mi_pod)
     print('TASK: assign roles to pod managed identity: DONE')
 
     print('TASK: create aad pod identity: STARTED')
-    create_pod_identity(config, 'soundscape-identity', mi_pod) #sync 
+    create_pod_identity(config, 'soundscape-identity', mi_pod)
     print('TASK: create aad pod identity DONE')
 
     print('TASK: create public ip for ingress: STARTED')
-    ip_address = create_static_public_ip_for_ingress(config, node_resource_group) #sync
+    ip_address = create_static_public_ip_for_ingress(config, node_resource_group)
     print('TASK: create public ip for ingress: DONE')
 
     print('TASK: get kubernetes credentials: STARTED')
-    get_aks_credentials(config) #sync
+    get_aks_credentials(config)
     print('TASK: get kubernetes credentials: DONE')
 
     print('TASK: initialize HELM: STARTED')
-    helm_init(config) #sync
+    helm_init(config)
     print('TASK: initialize HELM: DONE')
 
-    # I SUSPECT THIS FUNCTION IS REDUNDANT IF USING THE RUST OSM INGESTER
-    
-    #print('TASK: register database with service: STARTED') 
-    #db_register(config, database_desc) #sync
-    #print('TASK: register database with service: DONE')
+    print('TASK: register database with service: STARTED')
+    db_register(config, database_desc)
+    print('TASK: register database with service: DONE')
 
     print('TASK: service install: STARTED')
-    #service_install(config, container_registry_login, service_version, tenant) # This installs "stuff" to the kubernetes cluster line 448 for definition
+    service_install(config, container_registry_login, service_version, tenant)
     print('TASK: service install: DONE')
 
-#    print('TASK: check secrets availability: STARTED')
-#    check_for_secret(config, 'your_secret') # This attempts to get secretes from the kubernetes cluster 
-#    print('TASK: check secrets availability: DONE')
+    print('TASK: check secrets availability: STARTED')
+    check_for_secret(config, 'your_secret')
+    print('TASK: check secrets availability: DONE')
 
     print('TASK: nginx install into cluster: STARTED')
-    #nginx_ingress_install(config, 'soundscape-ingress', ip_address, 'soundscape-identity') #sync
+    nginx_ingress_install(config, 'soundscape-ingress', ip_address, 'soundscape-identity')
     print('TASK: nginx install into cluster: DONE')
 
     if config['parameters'].get('stress', False):
@@ -1596,7 +1464,7 @@ def provision_service(config):
 def dispatch(config):
 
     if config['action'] == 'delete':
-        deprovision(config)
+        deprovision(config);
     elif config['action'] == 'upgrade':
         upgrade_service(config)
     else:
@@ -1605,9 +1473,6 @@ def dispatch(config):
 parser = argparse.ArgumentParser(description='Soundscape Service Provisioner')
 parser.add_argument('--subscription', type=str, default=None)
 parser.add_argument('--resource-group', type=str, required=True)
-parser.add_argument('--keyvault-name', type=str, required=True)
-parser.add_argument('--container-registry-RG', type=str, required=True)
-parser.add_argument('--azure-container-registry-name', type=str, required=True)
 parser.add_argument('--name', type=str, required=True)
 parser.add_argument('--location', type=str, default=None)
 parser.add_argument('--namespace', type=str, default='soundscape')
@@ -1641,27 +1506,20 @@ elif args.upgrade:
 else:
     action = 'install'
 
-
-client = SubscriptionClient(credential, '2019-11-01')
-subscriptions_operations = client.subscriptions
-subscription = subscriptions_operations.get(subscription_id)
-#locall = subscriptions_operations.get()
 config = {
+    'infra': subscriptions[subscription_id],
     'action' : action,
     'name'   : args.name,
-    'container_registry_name':args.azure_container_registry_name,
-    'container_registry_RG':args.container_registry_RG,
     'subscription_id' : subscription_id,
     'resource_group' : args.resource_group,
-    'location': args.location if args.location else subscription[subscription_id]['default_location'],
-    'cluster_name': args.name +'-aks',
+    'location': args.location if args.location else subscriptions[subscription_id]['default_location'],
+    'cluster_name': args.name + '-aks',
     'mi_podname' : args.name + '-mipod',
     'mi_clustername' : args.name + '-micluster',
     'db_name' : args.name + '-db',
     'db_dns_zone' : args.name + '-db' + '.privatelink.postgres.database.azure.com',
     'db_dns_zone_link' : args.name + '-vnet-link',
-    
-    'kv_name' : args.keyvault_name,
+
     'kv_dns_zone' : 'privatelink.vaultcore.azure.net',
     'kv_dns_suffix': 'vault.azure.net',
     'kv_dns_zone_link' : args.name + '-kv-link',
@@ -1696,10 +1554,10 @@ config = {
     'parameters' : scale_parameters[args.scale],
     'kubernetes_version' : args.kubernetes_version,
     'namespace': args.namespace,
-    'res_client' : ResourceManagementClient(credential,subscription_id),
-    'acr_client' : ContainerRegistryManagementClient(credential, subscription_id),
-    'auth_client' : AuthorizationManagementClient(credential, subscription_id),
-    'rbac_client' : GraphRbacManagementClient(credential, subscription_id),
+    'res_client' : ResourceManagementClient(credential, subscription_id=subscription_id),
+    'acr_client' : ContainerRegistryManagementClient(credential, subscription_id=subscriptions[subscription_id]['subscription_id']),
+    'auth_client' : AuthorizationManagementClient(credential, subscription_id=subscription_id),
+    'rbac_client' : GraphRbacManagementClient(credential, tenant_id=subscription_id),
     'delete_yes' : args.delete and args.yes,
     'production' : args.scale.startswith('production'),
     'specified_service_version': args.service_version,

@@ -16,5 +16,5 @@ spec:
     tier: tile-service
     role: tile-server
   ports:
-    - port: 80
+    - port: 8080
       targetPort: tilesrv-port

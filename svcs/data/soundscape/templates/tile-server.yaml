@@ -39,17 +39,21 @@ spec:
           valueFrom:
             secretKeyRef:
               name: soundscape-database
-              key: dsn2
-        args: ["--dsn", "$(DSN)", "--server", "8080"]
-        livenessProbe:
-          httpGet:
-            path: /probe/alive
-            port: tilesrv-port
-          initialDelaySeconds: 5
-        readinessProbe:
-          httpGet:
-            path: /16/10532/22878.json
-            port: tilesrv-port
-          initialDelaySeconds: 5
-          timeoutSeconds: 60
-          periodSeconds: 120
+              key: dsn
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        args: ["--dsn", "$(DSN)"]
+        # livenessProbe:
+        #   httpGet:
+        #     path: /probe/alive
+        #     port: tilesrv-port
+        #   initialDelaySeconds: 20
+        # readinessProbe:
+        #  httpGet:
+        #    path: /16/10500/228.json
+        #    port: tilesrv-port
+        #  initialDelaySeconds: 30
+        #  timeoutSeconds: 60
+        #  periodSeconds: 120

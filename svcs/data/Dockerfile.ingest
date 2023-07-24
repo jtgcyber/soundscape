@@ -1,43 +1,32 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-# THIS IS THE OPENSCAPE dockerfile for the rust based ingester.
 
-FROM mcr.microsoft.com/cbl-mariner/base/core:2.0 as builder
+FROM mcr.microsoft.com/cbl-mariner/base/core:2.0 as installer
 
-ENV OSM2PGSQL_VERSION=1.6.0
+RUN tdnf -y update \
+ && tdnf install -y dnf \
+ && mkdir /staging \
+ && dnf install -y --release=2.0 --installroot /staging prebuilt-ca-certificates wget python3 python3-pip python3-setuptools
 
-RUN tdnf repolist --refresh
-RUN tdnf install -y ca-certificates-microsoft wget tar gzip
-RUN tdnf install -y build-essential cmake boost-devel expat-devel \
-    bzip2-devel postgresql-devel lua-devel glibc
+FROM mcr.microsoft.com/cbl-mariner/base/core:2.0 as imposm
 
-RUN mkdir /osm2pgsql && wget -q -O -  https://github.com/openstreetmap/osm2pgsql/archive/refs/tags/$OSM2PGSQL_VERSION.tar.gz | tar -xvz --strip-components=1 -C /osm2pgsql
+ENV IMPOSM_BINARY_RELEASE=0.11.1
 
-RUN mkdir /osm2pgsql/build
-WORKDIR /osm2pgsql/build
+RUN tdnf -y update \
+ && tdnf install -y ca-certificates-microsoft wget tar gzip \
+ && mkdir -p /ingest/imposm3 \
+ && wget -q -O - https://github.com/omniscale/imposm3/releases/download/v$IMPOSM_BINARY_RELEASE/imposm-$IMPOSM_BINARY_RELEASE-linux-x86-64.tar.gz | tar -xz --strip-components=1 -C /ingest/imposm3
 
-RUN cmake ..
-RUN make
-RUN make install
+FROM mcr.microsoft.com/cbl-mariner/distroless/base:2.0 as final
 
-FROM mcr.microsoft.com/cbl-mariner/base/core:2.0 as rustbuilder
+ENV PYTHONUNBUFFERED=true INGEST=/ingest TILES=/tiles MAPPING=/mapping UPDATE_FREQUENCY=minute
 
-RUN tdnf repolist --refresh
-RUN tdnf install -y ca-certificates-microsoft build-essential
-RUN tdnf install -y rust openssl-devel
+COPY --from=imposm /ingest/ $INGEST/
+COPY --from=installer /staging/ /
 
-RUN mkdir /build /build/src
-COPY Cargo.toml /build
-COPY main.rs /build/src
-WORKDIR /build
-RUN cargo build --release
+COPY requirements.txt requirements_kubernetes.txt ingest.py kubescape.py extracts.json tilefunc.sql $INGEST/
 
-FROM mcr.microsoft.com/cbl-mariner/base/core:2.0 as final
+RUN /usr/bin/pip3 install -r $INGEST/requirements.txt -r $INGEST/requirements_kubernetes.txt
 
-RUN tdnf install -y ca-certificates boost-devel expat-devel \
-  bzip2-devel postgresql-libs lua lua-devel gdb
-RUN mkdir /tools
-
-COPY --from=builder /usr/local/bin/osm2pgsql /usr/local/bin/osm2pgsql-replication /tools/
-COPY --from=rustbuilder /build/target/release/osmingester /tools
-WORKDIR /work
+CMD  rm -f $TILES/*.pbf && rm -rf $TILES/imposm_cache $TILES/imposm_expired $TILES/imposm_diff && \
+    python3 $INGEST/ingest.py --imposm $INGEST/imposm3/imposm --mapping $MAPPING/mapping.yml --where $GEN_REGIONS --extracts $INGEST/extracts.json --cachedir $TILES/imposm_cache  --diffdir $TILES/imposm_diff --pbfdir $TILES --expiredir $TILES/imposm_expired --verbose --updatemodel importloop --delay $LOOP_TIME --telemetry $INGEST_FLAGS

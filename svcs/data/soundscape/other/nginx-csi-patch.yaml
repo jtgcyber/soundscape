@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# THE SECRET IS A TLS CERT FOR YOUR SERVICE DOMAIN
+
 controller:
   extraVolumes:
       - name: secrets-store-inline
