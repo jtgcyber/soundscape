@@ -30,6 +30,7 @@ import yaml
 import shlex
 
 #from kubescape import SoundscapeKube
+from urllib.parse import urlparse
 from azure.core.exceptions import AzureError
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.resource import ResourceManagementClient
@@ -44,7 +45,7 @@ from azure.keyvault.secrets import SecretClient
 
 small_db_size = 90
 large_db_size = 1100
-small_cpu_sku = 'Standard_DS3_v2'
+small_cpu_sku = 'Standard_B2ms'
 large_cpu_sku = 'Standard_DS4_v2'
 small_db_sku = 'Standard_D2s_v3'
 large_db_sku = 'Standard_D4s_v3'
@@ -148,7 +149,7 @@ async def run_with_retry_async(args, count):
     for n in range(0, count - 1):
         proc, _ = await async_run(args)
         if proc.returncode == 0:
-            return;
+            return
         await asyncio.sleep(30)
     await async_run_check(args)
 
@@ -335,6 +336,7 @@ async def create_kubernetes_cluster(config, location, mi_cluster, podsub_id, nod
         '--network-plugin', 'azure',
         '--vnet-subnet-id', nodesub_id,
         '--pod-subnet-id', podsub_id,
+        '--zones','1',
         '--output', 'none'
     ]
 
@@ -453,11 +455,10 @@ def nginx_ingress_install(config, name, ip_address, identity_name):
         '--set', 'controller.service.loadBalancerIP={0}'.format(ip_address),
         '--set', 'controller.service.externalTrafficPolicy=Local',
         '--set', 'controller.service.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name={0}'.format(config['dns_name']),
-        '--set', 'controller.podLabels.aadpodidbinding={0}'.format(identity_name),
-        '-f', 'soundscape/other/nginx-csi-patch.yaml'
+        '--set', 'controller.podLabels.aadpodidbinding={0}'.format(identity_name)
     ]
 
-
+#,        '-f', 'soundscape/other/nginx-csi-patch.yaml' << Taken out to stop it looking to keyvault for cert 
     # if nginx_override:
     #     args.extend(['--set', 'controller.image.image={0}'.format(nginx_image_name)])
 
@@ -467,8 +468,7 @@ def nginx_ingress_install(config, name, ip_address, identity_name):
     subprocess.run(args, check=True)
 
 def service_install(config, container_registry_login, release, tenant):
-    #print ("Waiting 30 seconds for container provision")
-    #time.sleep(30)
+
     args = [
         'helm',
         'upgrade',
@@ -492,41 +492,41 @@ def service_install(config, container_registry_login, release, tenant):
     print("Running Command:\n",str(args))
     subprocess.run(args, check=True)
 
-# def create_kubectl_secret(secret_name, namespace, data_dict): #I added this function
-#     # Create a temporary file
-#     with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp:
-#         # Write the dictionary to the file as YAML
-#         yaml.dump({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": secret_name, "namespace": namespace}, "stringData": data_dict}, temp)
 
-#     # Run kubectl to create the secret
-#     try:
-#         args = [
-#         'kubectl',
-#         'apply',
-#         '-f', 
-#         temp.name]      
-#         print("Running Command:\n",str(args))
-        
-#         subprocess.run(args, check=True, capture_output=True)
-#     except subprocess.CalledProcessError as e:
-#         print(f"Command failed with exit code {e.returncode}")
-#         if e.stdout:
-#             print(f"Standard output:\n{e.stdout.decode()}")
-#         if e.stderr:
-#             print(f"Standard error:\n{e.stderr.decode()}")
 
-def create_kubectl_secret(secret_name, namespace, data_dict): #args when called ('dsn2',config['namespace'],database_desc)
+def extract_user_password_host(url):
+    parsed = urlparse(url)
+
+    # split username and password
+    user, password = parsed.netloc.split("@")[0].split(":")
+    host = parsed.hostname
+
+    return user, password, host
+
+
+
+
+
+
+def create_kubectl_secret(secret_name, namespace, data_dict):
     dsn = data_dict['dsn2']
-    args = f"kubectl create secret generic {secret_name} --from-literal=dsn={shlex.quote(dsn)} --namespace={namespace}"
-    print("Running Command:\n",str(args))
+    args = ["kubectl", "create", "secret", "generic", secret_name, "--from-literal=dsn=" + shlex.quote(dsn), "--namespace=" + namespace]
+    print("Running Command:\n", ' '.join(args))
     subprocess.run(args, check=True)
+
+    user, password, host = extract_user_password_host(dsn)
+
+    args2 = ["kubectl", "create", "secret", "generic", "dsn", "--from-literal=user=" + user, "--from-literal=password=" + password, "--from-literal=host=" + host, "--from-literal=port=5432", "--from-literal=dbname=osm", "--namespace=" + namespace]
+    print("Running Command:\n", ' '.join(args2))
+
+    subprocess.run(args2, check=True)
 
 
 def store_secret_in_keyvault(credential,keyvault_name, db_desc):
 
 #        db_desc = {
 #        'name': 'soundscape-database',
-#        'dsn2': 'postgresql://{user}:{password}@{host}:5432/osm'
+#        'dsn2': 'postgresql://user:password@host:5432/osm'
 #    } This contains server hostname, port, dbname, user and password
 
     
@@ -1527,7 +1527,7 @@ def provision_service(config):
     check_kubernetes_cluster_name(config, config['location']) #sync
     print('TASK: check kubernetes cluster name free: DONE')
 
-    update_helm_chart(config) #sync - This function appears to try to go to Azure Storage and retreive stuff I dont have - Its related to secrets, probably certs for the ingress 
+    #update_helm_chart(config) #sync - This function appears to try to go to Azure Storage and retreive stuff I dont have - Its related to secrets, probably certs for the ingress 
 
     print('TASK: setup environment: STARTED')
     (mi_cluster, mi_pod), (container_registry_login, container_registry_id, subnet_ids) = setup_environment(config, container_registry) # Appears to create managed identities and network components. SYNC that then uses asyncio.run(setup_environment_async)
@@ -1542,9 +1542,11 @@ def provision_service(config):
     print('TASK: create resources in parallel: DONE')
     print (database_desc)
     
+    print('TASK: Store Secrets in Keyvault: STARTED')
     store_secret_in_keyvault(credential,config['kv_name'],database_desc)
+    print('TASK: Store Secrets in Keyvault: DONE')
 
-    create_kubectl_secret('dsn2',config['namespace'],database_desc)
+
     node_resource_group = get_cluster_node_resource_group(config) # sync
 
     print('TASK: assign roles to pod managed identity: STARTED')
@@ -1562,10 +1564,17 @@ def provision_service(config):
     print('TASK: get kubernetes credentials: STARTED')
     get_aks_credentials(config) #sync
     print('TASK: get kubernetes credentials: DONE')
+    
+
 
     print('TASK: initialize HELM: STARTED')
     helm_init(config) #sync
     print('TASK: initialize HELM: DONE')
+
+    time.sleep(10)
+    print('TASK: Store Secrets in Kubernetes: STARTED')
+    create_kubectl_secret('dsn2',config['namespace'],database_desc)
+    print('TASK: Store Secrets in Kubernetes: STARTED')
 
     # I SUSPECT THIS FUNCTION IS REDUNDANT IF USING THE RUST OSM INGESTER
     
@@ -1574,15 +1583,16 @@ def provision_service(config):
     #print('TASK: register database with service: DONE')
 
     print('TASK: service install: STARTED')
-    #service_install(config, container_registry_login, service_version, tenant) # This installs "stuff" to the kubernetes cluster line 448 for definition
+    service_install(config, container_registry_login, service_version, tenant) # This installs "stuff" to the kubernetes cluster line 448 for definition
     print('TASK: service install: DONE')
+
 
 #    print('TASK: check secrets availability: STARTED')
 #    check_for_secret(config, 'your_secret') # This attempts to get secretes from the kubernetes cluster 
 #    print('TASK: check secrets availability: DONE')
 
     print('TASK: nginx install into cluster: STARTED')
-    #nginx_ingress_install(config, 'soundscape-ingress', ip_address, 'soundscape-identity') #sync
+    nginx_ingress_install(config, 'soundscape-ingress', ip_address, 'soundscape-identity') #sync
     print('TASK: nginx install into cluster: DONE')
 
     if config['parameters'].get('stress', False):

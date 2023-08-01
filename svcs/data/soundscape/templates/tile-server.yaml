@@ -38,7 +38,7 @@ spec:
         - name: DSN
           valueFrom:
             secretKeyRef:
-              name: soundscape-database
+              name: dsn2
               key: dsn
         - name: NAMESPACE
           valueFrom:
